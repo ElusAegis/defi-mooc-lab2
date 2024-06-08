@@ -2,11 +2,13 @@
 pragma solidity ^0.8.7;
 
 import "hardhat/console.sol";
+import "./ICurveFi.sol";
 
 // ----------------------INTERFACE------------------------------
 
 // Aave
 // https://docs.aave.com/developers/the-core-protocol/lendingpool/ilendingpool
+
 
 interface ILendingPool {
     /**
@@ -77,7 +79,7 @@ interface IERC20 {
 // https://github.com/Uniswap/v2-periphery/blob/master/contracts/interfaces/IWETH.sol
 interface IWETH is IERC20 {
     // Convert the wrapped token back to Ether.
-    function withdraw(uint256) external;
+    function withdraw(uint) external;
 }
 
 // https://github.com/Uniswap/v2-core/blob/master/contracts/interfaces/IUniswapV2Callee.sol
@@ -87,7 +89,7 @@ interface IUniswapV2Callee {
         address sender,
         uint256 amount0,
         uint256 amount1,
-        bytes calldata data
+        bytes calldata
     ) external;
 }
 
@@ -112,7 +114,7 @@ interface IUniswapV2Pair {
         uint256 amount0Out,
         uint256 amount1Out,
         address to,
-        bytes calldata data
+        bytes calldata
     ) external;
 
     /**
@@ -137,6 +139,21 @@ contract LiquidationOperator is IUniswapV2Callee {
 
     // TODO: define constants used in the contract including ERC-20 tokens, Uniswap Pairs, Aave lending pools, etc. */
     //    *** Your code here ***
+    ILendingPool LENDING_POOL = ILendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9);
+    IUniswapV2Pair SWAP_PAIR_BTC_ETH = IUniswapV2Pair(0xCEfF51756c56CeFFCA006cD410B03FFC46dd3a58);
+    IUniswapV2Pair SWAP_PAIR_USDC_ETH = IUniswapV2Pair(0x397FF1542f962076d0BFE58eA045FfA2d347ACa0);
+    ICurveFi CURVE_PROTOCOL = ICurveFi(0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7);
+
+    IERC20 A_WBTC = IERC20(0x9ff58f4fFB29fA2266Ab25e75e2A8b3503311656);
+    IERC20 USDC = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
+    IERC20 USDT = IERC20(0xdAC17F958D2ee523a2206206994597C13D831ec7);
+    IWETH WETH = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+    IERC20 WBTC = IERC20(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);
+
+
+    address TARGET = 0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F;
+
+    address payable owner;
     // END TODO
 
     // some helper function, it is totally fine if you can finish the lab without using these function
@@ -180,11 +197,13 @@ contract LiquidationOperator is IUniswapV2Callee {
     constructor() {
         // TODO: (optional) initialize your contract
         //   *** Your code here ***
+        owner = payable (msg.sender);
         // END TODO
     }
 
     // TODO: add a `receive` function so that you can withdraw your WETH
-    //   *** Your code here ***
+     receive() external payable {
+    }
     // END TODO
 
     // required by the testing script, entry for your liquidation call
@@ -195,14 +214,50 @@ contract LiquidationOperator is IUniswapV2Callee {
         //    *** Your code here ***
 
         // 1. get the target user account data & make sure it is liquidatable
-        //    *** Your code here ***
+        uint256 targetsBalanceBTC = A_WBTC.balanceOf(TARGET);
+
+        (
+            uint112 BTC_reserve0,
+            uint112 ETH_reserve1_0,
+            uint32 _timestamp_0
+        ) = SWAP_PAIR_BTC_ETH.getReserves();
+        uint256 targetsBalanceEqEth = getAmountOut(targetsBalanceBTC, BTC_reserve0, ETH_reserve1_0);
+
+        (
+            uint256 totalCollateralETH,
+            uint256 totalDebtETH,
+            uint256 availableBorrowsETH,
+            uint256 currentLiquidationThreshold,
+            uint256 ltv,
+            uint256 healthFactor
+        ) = LENDING_POOL.getUserAccountData(TARGET);
+
+        assert(healthFactor < 1 ether); // Position is possible to be liquidated
+
 
         // 2. call flash swap to liquidate the target user
+        (
+            uint112 USDC_reserve0,
+            uint112 ETH_reserve1_1,
+            uint32 _timestamp_1
+        ) = SWAP_PAIR_USDC_ETH.getReserves();
+        uint256 ethToBorrow = targetsBalanceEqEth / 1000 * 945;
+
+
+        uint256 usdcBorrowed = getAmountOut(ethToBorrow, ETH_reserve1_1, USDC_reserve0);
+
+        console.log(ethToBorrow, "Borrowed Eth");
+        console.log(usdcBorrowed, "Equivalent USDC amount");
+
+        bytes memory data = abi.encode(usdcBorrowed, ethToBorrow);
+
+        SWAP_PAIR_USDC_ETH.swap(usdcBorrowed, 0, address(this), data);
+
         // based on https://etherscan.io/tx/0xac7df37a43fab1b130318bbb761861b8357650db2e2c6493b73d6da3d9581077
         // we know that the target user borrowed USDT with WBTC as collateral
         // we should borrow USDT, liquidate the target user and get the WBTC, then swap WBTC to repay uniswap
         // (please feel free to develop other workflows as long as they liquidate the target user successfully)
-        //    *** Your code here ***
+
 
         // 3. Convert the profit into ETH and send back to sender
         //    *** Your code here ***
@@ -215,21 +270,54 @@ contract LiquidationOperator is IUniswapV2Callee {
         address,
         uint256,
         uint256 amount1,
-        bytes calldata
+        bytes calldata data
     ) external override {
+
+        address myAddress = address(this);
+        (uint256 usdcBorrowed, uint256 ethBorrowed) = abi.decode(data, (uint256, uint256));
+
         // TODO: implement your liquidation logic
 
-        // 2.0. security checks and initializing variables
-        //    *** Your code here ***
+        // 2.0. exchange USDC for USDT
+        USDC.approve(address(CURVE_PROTOCOL), usdcBorrowed);
+        CURVE_PROTOCOL.exchange(1, 2, usdcBorrowed, 0);
+        uint256 usdtBalance = USDT.balanceOf(myAddress);
+
 
         // 2.1 liquidate the target user
-        //    *** Your code here ***
+        USDT.approve(address(LENDING_POOL), usdtBalance);
+
+        LENDING_POOL.liquidationCall(address(WBTC), address(USDT), TARGET, usdtBalance, false);
+
+
 
         // 2.2 swap WBTC for other things or repay directly
-        //    *** Your code here ***
+        uint256 btcBalance = WBTC.balanceOf(myAddress);
+
+        WBTC.transfer(address(SWAP_PAIR_BTC_ETH), btcBalance);
+
+        console.log(btcBalance, "WBTC Earned");
+
+        (
+            uint256 BTC_reserve0,
+            uint256 ETH_reserve1_1,
+            uint32 _timestamp_1
+        ) = SWAP_PAIR_BTC_ETH.getReserves();
+        uint256 amountEarned = getAmountOut(btcBalance, BTC_reserve0, ETH_reserve1_1);
+
+        bytes memory empty_bytes;
+        SWAP_PAIR_BTC_ETH.swap(0, amountEarned, myAddress, empty_bytes);
+
 
         // 2.3 repay
-        //    *** Your code here ***
+        WETH.transfer(address(SWAP_PAIR_USDC_ETH), ethBorrowed);
+
+
+        // 2.4 transfer profit
+        uint256 profit = WETH.balanceOf(myAddress);
+        WETH.withdraw(profit);
+
+        owner.transfer(profit);
         
         // END TODO
     }
