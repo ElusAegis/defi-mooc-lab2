@@ -10,6 +10,53 @@ import "./ICurveFi.sol";
 // https://docs.aave.com/developers/the-core-protocol/lendingpool/ilendingpool
 
 
+library DataTypes {
+  // refer to the whitepaper, section 1.1 basic concepts for a formal description of these properties.
+  struct ReserveData {
+    //stores the reserve configuration
+    ReserveConfigurationMap configuration;
+    //the liquidity index. Expressed in ray
+    uint128 liquidityIndex;
+    //variable borrow index. Expressed in ray
+    uint128 variableBorrowIndex;
+    //the current supply rate. Expressed in ray
+    uint128 currentLiquidityRate;
+    //the current variable borrow rate. Expressed in ray
+    uint128 currentVariableBorrowRate;
+    //the current stable borrow rate. Expressed in ray
+    uint128 currentStableBorrowRate;
+    uint40 lastUpdateTimestamp;
+    //tokens addresses
+    address aTokenAddress;
+    address stableDebtTokenAddress;
+    address variableDebtTokenAddress;
+    //address of the interest rate strategy
+    address interestRateStrategyAddress;
+    //the id of the reserve. Represents the position in the list of the active reserves
+    uint8 id;
+  }
+
+  struct ReserveConfigurationMap {
+    //bit 0-15: LTV
+    //bit 16-31: Liq. threshold
+    //bit 32-47: Liq. bonus
+    //bit 48-55: Decimals
+    //bit 56: Reserve is active
+    //bit 57: reserve is frozen
+    //bit 58: borrowing is enabled
+    //bit 59: stable rate borrowing enabled
+    //bit 60-63: reserved
+    //bit 64-79: reserve factor
+    uint256 data;
+  }
+
+  struct UserConfigurationMap {
+    uint256 data;
+  }
+
+  enum InterestRateMode {NONE, STABLE, VARIABLE}
+}
+
 interface ILendingPool {
     /**
      * Function to liquidate a non-healthy position collateral-wise, with Health Factor below 1
@@ -51,6 +98,25 @@ interface ILendingPool {
             uint256 ltv,
             uint256 healthFactor
         );
+
+
+    function getUserConfiguration(address user)
+        external
+        view
+        returns (
+            DataTypes.UserConfigurationMap memory
+        );
+
+
+    function getReserveData(address asset)
+        external
+        view
+        returns (
+            DataTypes.ReserveData memory
+        );
+
+    function getReservesList() external view returns (address[] memory);
+
 }
 
 // UniswapV2
@@ -135,23 +201,36 @@ interface IUniswapV2Pair {
 // ----------------------IMPLEMENTATION------------------------------
 
 contract LiquidationOperator is IUniswapV2Callee {
+
+    struct BorrowingTokenAndBalance {
+        address token;
+        uint256 debt;
+    }
+
+    struct CollateralTokenAndBalance {
+        address token;
+        uint256 collateral;
+    }
+
     uint8 public constant health_factor_decimals = 18;
 
     // TODO: define constants used in the contract including ERC-20 tokens, Uniswap Pairs, Aave lending pools, etc. */
     //    *** Your code here ***
-    ILendingPool LENDING_POOL = ILendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9);
-    IUniswapV2Pair SWAP_PAIR_BTC_ETH = IUniswapV2Pair(0xCEfF51756c56CeFFCA006cD410B03FFC46dd3a58);
-    IUniswapV2Pair SWAP_PAIR_USDC_ETH = IUniswapV2Pair(0x397FF1542f962076d0BFE58eA045FfA2d347ACa0);
-    ICurveFi CURVE_PROTOCOL = ICurveFi(0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7);
+    ILendingPool private LENDING_POOL = ILendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9);
+    IUniswapV2Factory private SUSHI_FACTORY = IUniswapV2Factory(0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac);
+    IUniswapV2Factory private UNISWAP_FACTORY = IUniswapV2Factory(0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac);
 
-    IERC20 A_WBTC = IERC20(0x9ff58f4fFB29fA2266Ab25e75e2A8b3503311656);
-    IERC20 USDC = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
-    IERC20 USDT = IERC20(0xdAC17F958D2ee523a2206206994597C13D831ec7);
-    IWETH WETH = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
-    IERC20 WBTC = IERC20(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);
+    IERC20 private A_WBTC = IERC20(0x9ff58f4fFB29fA2266Ab25e75e2A8b3503311656);
+    IERC20 private USDC = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
+    IERC20 private USDT = IERC20(0xdAC17F958D2ee523a2206206994597C13D831ec7);
+    IWETH private WETH = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+    IERC20 private WBTC = IERC20(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);
 
 
-    address TARGET = 0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F;
+    address private TARGET = 0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F;
+
+    BorrowingTokenAndBalance[] borrowingTokens;
+    CollateralTokenAndBalance[] collateralTokens;
 
     address payable owner;
     // END TODO
@@ -194,6 +273,22 @@ contract LiquidationOperator is IUniswapV2Callee {
         amountIn = (numerator / denominator) + 1;
     }
 
+    function isUsingAsCollateral(DataTypes.UserConfigurationMap memory config, uint256 reserveIndex)
+        internal
+        pure
+        returns (bool) {
+        require(reserveIndex < 128);
+        return (config.data >> (reserveIndex * 2 + 1)) & 1 != 0;
+    }
+
+    function isBorrowing(DataTypes.UserConfigurationMap memory config, uint256 reserveIndex)
+        internal
+        pure
+        returns (bool) {
+        require(reserveIndex < 128);
+        return (config.data >> (reserveIndex * 2)) & 1 != 0;
+      }
+
     constructor() {
         // TODO: (optional) initialize your contract
         //   *** Your code here ***
@@ -212,17 +307,6 @@ contract LiquidationOperator is IUniswapV2Callee {
 
         // 0. security checks and initializing variables
         //    *** Your code here ***
-
-        // 1. get the target user account data & make sure it is liquidatable
-        uint256 targetsBalanceBTC = A_WBTC.balanceOf(TARGET);
-
-        (
-            uint112 BTC_reserve0,
-            uint112 ETH_reserve1_0,
-            uint32 _timestamp_0
-        ) = SWAP_PAIR_BTC_ETH.getReserves();
-        uint256 targetsBalanceEqEth = getAmountOut(targetsBalanceBTC, BTC_reserve0, ETH_reserve1_0);
-
         (
             uint256 totalCollateralETH,
             uint256 totalDebtETH,
@@ -235,23 +319,116 @@ contract LiquidationOperator is IUniswapV2Callee {
         assert(healthFactor < 1 ether); // Position is possible to be liquidated
 
 
+        // Iterate over all resevers and find ones the user is borrowing:
+        address[] memory reserves = LENDING_POOL.getReservesList();
+        DataTypes.UserConfigurationMap memory userConf = LENDING_POOL.getUserConfiguration(TARGET);
+
+
+
+        // Only run for first 10 tokens, for each, check if the user used it as a collateral or as a borrowing asset
+        // For each, add the amount the user has deposited as a collateral / borrowed
+        for (uint i = 0; i < reserves.length && i < 10; i++) {
+            if (isBorrowing(userConf, i)) {
+
+                address reserveToken = reserves[i];
+                DataTypes.ReserveData memory reserveData = LENDING_POOL.getReserveData(reserveToken);
+
+                uint256 totalDebt = IERC20(reserveData.stableDebtTokenAddress).balanceOf(TARGET)
+                    + IERC20(reserveData.variableDebtTokenAddress).balanceOf(TARGET);
+
+                borrowingTokens.push(BorrowingTokenAndBalance ( reserveToken, totalDebt ));
+
+                continue;
+
+            }
+
+            if (isUsingAsCollateral(userConf, i)) {
+
+                address reserveToken = reserves[i];
+                DataTypes.ReserveData memory reserveData = LENDING_POOL.getReserveData(reserveToken);
+
+                uint256 totalCollateral = IERC20(reserveData.aTokenAddress).balanceOf(TARGET);
+
+
+                collateralTokens.push(CollateralTokenAndBalance(reserveToken, totalCollateral));
+
+                continue;
+            }
+
+
+            // Take pairs of collateral and debt, and attempt to liquidate them
+            while (borrowingTokens.length != 0 && collateralTokens.length != 0) {
+
+                CollateralTokenAndBalance storage currentCollateralTokenP = collateralTokens[collateralTokens.length - 1];
+                BorrowingTokenAndBalance storage currentBorrowingTokenP = borrowingTokens[borrowingTokens.length - 1];
+
+
+                // Check if there is an exchange pair registered:
+                address swapEthToCollateralPair = SUSHI_FACTORY.getPair(currentCollateralTokenP.token, address(WETH));
+                address swapEthToBorrowingPair = UNISWAP_FACTORY.getPair(currentBorrowingTokenP.token, address(WETH));
+
+                // If exchange pair does not exist, then skip the token
+                if (swapEthToCollateralPair ==  address(0)) {
+                    collateralTokens.pop();
+                    continue;
+                }
+                if (swapEthToBorrowingPair ==  address(0)) {
+                    borrowingTokens.pop();
+                    continue;
+                }
+
+                // TODO - check if the liquidity is sufficient in an exchange pair
+
+                (
+                    uint256 collateral_reserve0,
+                    uint256 eth_reserve1_0,
+                    uint32 _timestamp_0
+                ) = IUniswapV2Pair(swapEthToCollateralPair).getReserves();
+                uint256 ethCollateralBalance = getAmountOut(currentCollateralTokenP.collateral, collateral_reserve0, eth_reserve1_0);
+
+                (
+                    uint256 borrowing_reserve0,
+                    uint256 eth_reserve1_1,
+                    uint32 _timestamp_1
+                ) = IUniswapV2Pair(swapEthToBorrowingPair).getReserves();
+                uint256 ethBorrowingBalance = getAmountOut(currentBorrowingTokenP.debt, borrowing_reserve0, eth_reserve1_1);
+
+                uint256 liquidAmountEth;
+                if (ethCollateralBalance * currentLiquidationThreshold / 1000 >= ethBorrowingBalance * 1000 ) {
+                    borrowingTokens.pop(); // We no longer can use this token as borrowing asset
+                    liquidAmountEth = ethBorrowingBalance;
+                    currentCollateralTokenP.collateral -= getAmountOut(liquidAmountEth, eth_reserve1_1, collateral_reserve0);
+                } else {
+                    collateralTokens.pop(); // We no longer can use this token as collateral asset
+                    liquidAmountEth = ethCollateralBalance * currentLiquidationThreshold / 1000;
+                    currentBorrowingTokenP.debt -= getAmountOut(liquidAmountEth, eth_reserve1_1, borrowing_reserve0);
+                }
+
+
+                singleOperation(swapEthToCollateralPair, swapEthToBorrowingPair, liquidAmountEth, currentCollateralTokenP.token, currentBorrowingTokenP.token);
+
+
+            }
+        }
+    }
+
+    // Single liquidation operation based on two exchange pairs and amount to be liquidated in Ethereum
+    function singleOperation(address swapEthToCollateralPair, address swapEthToBorrowingPair, uint256 liquidAmountEth, address collateralToken, address borrowToken) internal {
+
+
         // 2. call flash swap to liquidate the target user
         (
-            uint112 USDC_reserve0,
-            uint112 ETH_reserve1_1,
-            uint32 _timestamp_1
-        ) = SWAP_PAIR_USDC_ETH.getReserves();
-        uint256 ethToBorrow = targetsBalanceEqEth / 1000 * 945;
+            uint112 borrowing_reserve0,
+            uint112 ETH_reserve1,
+            uint32 _timestamp
+        ) = IUniswapV2Pair(swapEthToBorrowingPair).getReserves();
+
+        uint256 borrowedAssetNeeded = getAmountOut(liquidAmountEth, ETH_reserve1, borrowing_reserve0);
 
 
-        uint256 usdcBorrowed = getAmountOut(ethToBorrow, ETH_reserve1_1, USDC_reserve0);
+        bytes memory data = abi.encode(swapEthToCollateralPair, swapEthToBorrowingPair, liquidAmountEth, collateralToken, borrowToken);
 
-        console.log(ethToBorrow, "Borrowed Eth");
-        console.log(usdcBorrowed, "Equivalent USDC amount");
-
-        bytes memory data = abi.encode(usdcBorrowed, ethToBorrow);
-
-        SWAP_PAIR_USDC_ETH.swap(usdcBorrowed, 0, address(this), data);
+        IUniswapV2Pair(swapEthToBorrowingPair).swap(borrowedAssetNeeded, 0, address(this), data);
 
         // based on https://etherscan.io/tx/0xac7df37a43fab1b130318bbb761861b8357650db2e2c6493b73d6da3d9581077
         // we know that the target user borrowed USDT with WBTC as collateral
@@ -274,43 +451,33 @@ contract LiquidationOperator is IUniswapV2Callee {
     ) external override {
 
         address myAddress = address(this);
-        (uint256 usdcBorrowed, uint256 ethBorrowed) = abi.decode(data, (uint256, uint256));
-
-        // TODO: implement your liquidation logic
-
-        // 2.0. exchange USDC for USDT
-        USDC.approve(address(CURVE_PROTOCOL), usdcBorrowed);
-        CURVE_PROTOCOL.exchange(1, 2, usdcBorrowed, 0);
-        uint256 usdtBalance = USDT.balanceOf(myAddress);
+        (address swapEthToCollateralPair, address swapEthToBorrowingPair, uint256 liquidAmountEth, address collateralToken, address borrowToken) = abi.decode(data, (address, address, uint256, address, address));
 
 
         // 2.1 liquidate the target user
-        USDT.approve(address(LENDING_POOL), usdtBalance);
+        uint256 borrowBalance = IERC20(borrowToken).balanceOf(myAddress);
+        IERC20(borrowToken).approve(address(LENDING_POOL), borrowBalance);
 
-        LENDING_POOL.liquidationCall(address(WBTC), address(USDT), TARGET, usdtBalance, false);
+        LENDING_POOL.liquidationCall(collateralToken, borrowToken, TARGET, borrowBalance, false);
 
 
-
-        // 2.2 swap WBTC for other things or repay directly
-        uint256 btcBalance = WBTC.balanceOf(myAddress);
-
-        WBTC.transfer(address(SWAP_PAIR_BTC_ETH), btcBalance);
-
-        console.log(btcBalance, "WBTC Earned");
+        // 2.2 swap Collateral for other things or repay directly
+        uint256 collateralBalance = IERC20(collateralToken).balanceOf(myAddress);
+        IERC20(collateralToken).transfer(swapEthToCollateralPair, collateralBalance);
 
         (
-            uint256 BTC_reserve0,
-            uint256 ETH_reserve1_1,
-            uint32 _timestamp_1
-        ) = SWAP_PAIR_BTC_ETH.getReserves();
-        uint256 amountEarned = getAmountOut(btcBalance, BTC_reserve0, ETH_reserve1_1);
+            uint256 collateral_reserve0,
+            uint256 eth_reserve1,
+            uint32 _timestamp
+        ) = IUniswapV2Pair(swapEthToCollateralPair).getReserves();
+        uint256 amountEarned = getAmountOut(collateralBalance, collateral_reserve0, eth_reserve1);
 
         bytes memory empty_bytes;
-        SWAP_PAIR_BTC_ETH.swap(0, amountEarned, myAddress, empty_bytes);
+        IUniswapV2Pair(swapEthToCollateralPair).swap(0, amountEarned, myAddress, empty_bytes);
 
 
         // 2.3 repay
-        WETH.transfer(address(SWAP_PAIR_USDC_ETH), ethBorrowed);
+        WETH.transfer(swapEthToBorrowingPair, liquidAmountEth);
 
 
         // 2.4 transfer profit
