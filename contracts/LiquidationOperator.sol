@@ -219,7 +219,6 @@ contract LiquidationOperator is IUniswapV2Callee {
         (
             uint112 BTC_reserve0,
             uint112 ETH_reserve1_0,
-            uint32 _timestamp_0
         ) = SWAP_PAIR_BTC_ETH.getReserves();
         uint256 targetsBalanceEqEth = getAmountOut(targetsBalanceBTC, BTC_reserve0, ETH_reserve1_0);
 
@@ -239,7 +238,6 @@ contract LiquidationOperator is IUniswapV2Callee {
         (
             uint112 USDC_reserve0,
             uint112 ETH_reserve1_1,
-            uint32 _timestamp_1
         ) = SWAP_PAIR_USDC_ETH.getReserves();
         uint256 ethToBorrow = targetsBalanceEqEth / 1000 * 945;
 
@@ -301,7 +299,6 @@ contract LiquidationOperator is IUniswapV2Callee {
         (
             uint256 BTC_reserve0,
             uint256 ETH_reserve1_1,
-            uint32 _timestamp_1
         ) = SWAP_PAIR_BTC_ETH.getReserves();
         uint256 amountEarned = getAmountOut(btcBalance, BTC_reserve0, ETH_reserve1_1);
 
